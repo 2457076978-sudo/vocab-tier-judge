@@ -17,8 +17,8 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from anchor_layer import anchor_e
 
 PROJ = "/Users/wayne/Desktop/工作文档库/05-网站与AI工作区/初中单词判定器"
-MODEL = os.path.expanduser("~/.omlx/models/Qwen3-0.6B-bf16")
-ADAPTER = PROJ + "/adapters/" + os.environ.get("JUDGE_ADAPTER", "v6")
+MODEL = os.path.expanduser(os.environ.get("JUDGE_MODEL", "/Users/wayne/models/MiniCPM5-1B-mlx-bf16"))
+ADAPTER = PROJ + "/adapters/" + os.environ.get("JUDGE_ADAPTER", "mcpm5_v7")
 
 PROMPT = ("给英文单词的学段难度定档（按中国学生普通进度，取最早学段）。\n单词：%s\n"
           "选项：一=七年级 二=八年级 三=九年级（初中毕业线） 四=高中（高考3500内） 五=大学毕业以上\n/no_think")
@@ -64,7 +64,11 @@ def deinflect(w):
 
 
 def words_of(path):
+    """返回 (小写token序列, 专名候选集)。专名判定=确定性组合闸：
+    ①句中位置出现过大写形、且全文从未出现小写形 ②且不在课标1673（防句首偶现普通词误伤）。"""
     toks = []
+    cap = {}      # 小写形 -> {'mid': 句中大写次数, 'low': 小写出现次数}
+    line_start = True
     for line in open(path, encoding="utf-8"):
         if line.startswith("#"):
             continue
@@ -72,10 +76,29 @@ def words_of(path):
         line = PP_MARK.sub(" ", line)
         line = line.replace("--", " ")
         for t in TOKEN.findall(line):
-            t = t.lower().rstrip("'")
-            if len(t) >= 2:
-                toks.append(t)
-    return toks
+            raw = t.rstrip("'")
+            lo = raw.lower()
+            if len(lo) < 2:
+                line_start = raw in ".!?"
+                continue
+            st = cap.setdefault(lo, {"mid": 0, "start": 0, "low": 0})
+            if raw[0].isupper():
+                st["mid" if not line_start else "start"] += 1
+            else:
+                st["low"] += 1
+            toks.append(lo)
+            line_start = t[-1] in ".!?" or raw[-1] in ".!?"
+    if not hasattr(words_of, "_kebiao"):
+        kb = set()
+        for line in open(PROJ + "/data/eval_课标.tsv", encoding="utf-8").readlines()[1:]:
+            w = line.split("\t")[0].strip().lower()
+            if w.isascii():
+                kb.add(w)
+        words_of._kebiao = kb
+    propers = {w for w, s in cap.items()
+               if s["low"] == 0 and len(w) >= 2 and w not in words_of._kebiao
+               and (s["mid"] >= 1 or s["start"] >= 2)}
+    return toks, propers
 
 
 def main():
@@ -88,7 +111,7 @@ def main():
         ids = tokenizer.encode(lab, add_special_tokens=False)
         assert len(ids) == 1
         lids.append(ids[0])
-    think = tokenizer.encode("<think>\n\n</think>\n\n", add_special_tokens=False)
+    think = tokenizer.encode("<think>\n\n</think>\n\n", add_special_tokens=False) if "Qwen" in MODEL else []
 
     def batch_read(ws):
         seqs = []
@@ -116,13 +139,16 @@ def main():
             out.append((e, conf))
         return out
 
-    # 全部文件词集合并打分（去重+归并基础形）
+    # 全部文件词集合并打分（去重+归并基础形）；专名候选不进打分与着色，单列 proper 通道
     per_file = {}
+    proper_of = {}
     vocab = set()
     for f in files:
-        toks = words_of(f)
+        toks, propers = words_of(f)
+        toks = [t for t in toks if t not in propers]
         vocab.update(toks)
         per_file[f] = toks
+        proper_of[f] = propers
     base_map = {}
     bases = set()
     for w in vocab:
@@ -172,11 +198,12 @@ def main():
             json.dump({
                 "schemaVersion": 1,
                 "generator": "初中单词判定器 scan_chapter_grades.py",
-                "adapter": os.environ.get("JUDGE_ADAPTER", "v6"),
+                "adapter": os.environ.get("JUDGE_ADAPTER", "mcpm5_v7"),
                 "anchor": "学段户口v0.3·最早侧封顶托底",
                 "generated": "2026-09-20",
                 "words": dict(sorted(fmap.items(), key=lambda kv: -kv[1])),
                 "conf": cmap,
+                "proper": sorted(proper_of[f]),
             }, out, ensure_ascii=False, indent=0)
         hot = sum(1 for e in fmap.values() if e >= 3.5)
         nmoved = len(moved & set(fmap))

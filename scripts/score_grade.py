@@ -18,8 +18,8 @@ from anchor_layer import anchor_e
 
 BASE = "/Users/wayne/Desktop/工作文档库"
 PROJ = BASE + "/05-网站与AI工作区/初中单词判定器"
-MODEL = os.path.expanduser("~/.omlx/models/Qwen3-0.6B-bf16")
-ADAPTER = PROJ + "/adapters/" + os.environ.get("JUDGE_ADAPTER", "v6")
+MODEL = os.path.expanduser(os.environ.get("JUDGE_MODEL", "/Users/wayne/models/MiniCPM5-1B-mlx-bf16"))
+ADAPTER = PROJ + "/adapters/" + os.environ.get("JUDGE_ADAPTER", "mcpm5_v7")
 
 PROMPT = ("给英文单词的学段难度定档（按中国学生普通进度，取最早学段）。\n单词：%s\n"
           "选项：一=七年级 二=八年级 三=九年级（初中毕业线） 四=高中（高考3500内） 五=大学毕业以上\n/no_think")
@@ -47,7 +47,7 @@ def main():
         ids = tokenizer.encode(lab, add_special_tokens=False)
         assert len(ids) == 1
         lids.append(ids[0])
-    think = tokenizer.encode("<think>\n\n</think>\n\n", add_special_tokens=False)
+    think = tokenizer.encode("<think>\n\n</think>\n\n", add_special_tokens=False) if "Qwen" in MODEL else []
 
     # ---- 词频融合层 v0.1（确定性，2026-09-20）：模型管泛化，频率管已见证词 ----
     # 规则：fined 自身罕见，但基础形 fine 在课标正册且材料覆盖 185 → 可解码，融合分下拉。
@@ -156,7 +156,7 @@ def main():
         extra = f"\t融合E={fused:.2f}" if fused is not None else ""
         mark = " <==" if act in ("封顶", "托底") else ""
         print(f"[{i}/{len(words)}] {w}\tE={e:.2f} ({TIER2NAME[top]}){extra}\t"
-              f"锚定E={ae:.2f}[{st or '无户口'}·{act}]{mark}\t" +
+              f"锚定E={ae:.2f}[{act if st is None else st + '·' + act}]{mark}\t" +
               " ".join(f"{j+1}:{p:.2f}" for j, p in enumerate(ps)))
 
     if args.out:
