@@ -13,6 +13,9 @@ import sys
 import mlx.core as mx
 from mlx_lm import load
 
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from anchor_layer import anchor_e
+
 BASE = "/Users/wayne/Desktop/工作文档库"
 PROJ = BASE + "/05-网站与AI工作区/初中单词判定器"
 MODEL = os.path.expanduser("~/.omlx/models/Qwen3-0.6B-bf16")
@@ -145,19 +148,25 @@ def main():
                         break
         done = min(i + B, len(words))
         print(f"... {done}/{len(words)}", flush=True)
-    for i, (w, e, ps, fused) in enumerate(rows, 1):
+    # 锚点层 v0.3：词表户口封顶/托底（正典优先·最早学段侧），作用于最终读数
+    rows = [(w, e, ps, fused, *anchor_e(w, fused if fused is not None else e))
+            for (w, e, ps, fused) in rows]
+    for i, (w, e, ps, fused, ae, st, act) in enumerate(rows, 1):
         top = max(range(5), key=lambda j: ps[j]) + 1
         extra = f"\t融合E={fused:.2f}" if fused is not None else ""
-        print(f"[{i}/{len(words)}] {w}\tE={e:.2f} ({TIER2NAME[top]}){extra}\t" +
+        mark = " <==" if act in ("封顶", "托底") else ""
+        print(f"[{i}/{len(words)}] {w}\tE={e:.2f} ({TIER2NAME[top]}){extra}\t"
+              f"锚定E={ae:.2f}[{st or '无户口'}·{act}]{mark}\t" +
               " ".join(f"{j+1}:{p:.2f}" for j, p in enumerate(ps)))
 
     if args.out:
         with open(args.out, "w", encoding="utf-8") as f:
-            f.write("词\t期望学段\t融合E\t峰值档\tP1\tP2\tP3\tP4\tP5\n")
-            for w, e, ps, fused in rows:
+            f.write("词\t模型E\t融合E\t锚定E\t户口\t处置\t峰值档\tP1\tP2\tP3\tP4\tP5\n")
+            for w, e, ps, fused, ae, st, act in rows:
                 top = max(range(5), key=lambda j: ps[j]) + 1
                 fu = f"{fused:.3f}" if fused is not None else ""
-                f.write(f"{w}\t{e:.3f}\t{fu}\t{top}\t" + "\t".join(f"{p:.3f}" for p in ps) + "\n")
+                f.write(f"{w}\t{e:.3f}\t{fu}\t{ae:.3f}\t{st or '-'}\t{act}\t{top}\t" +
+                        "\t".join(f"{p:.3f}" for p in ps) + "\n")
         print(f"已写出: {args.out}")
 
 

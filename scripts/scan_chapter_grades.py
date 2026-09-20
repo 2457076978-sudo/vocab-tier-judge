@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 """章节学段读数生成器：工序化 md → <基名>_学段读数.json（App 审校台着色数据源）
 解析与 App reader 同口径：## 头跳过、（中文注）剥除、[P01]/[PP02] 剥除、-- 断词、撇号尾剥。
-词归并到基础形（该文件词集内回退），批量 v4 旋钮打分，键=小写基础形。
+词归并到基础形（该文件词集内回退），批量 v6 旋钮打分 + 锚点层 v0.3 户口纠偏，键=小写基础形。
 用法：~/venvs/mlx/bin/python scripts/scan_chapter_grades.py <md文件...>
 """
 import json
@@ -12,6 +12,9 @@ import sys
 
 import mlx.core as mx
 from mlx_lm import load
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from anchor_layer import anchor_e
 
 PROJ = "/Users/wayne/Desktop/工作文档库/05-网站与AI工作区/初中单词判定器"
 MODEL = os.path.expanduser("~/.omlx/models/Qwen3-0.6B-bf16")
@@ -134,16 +137,30 @@ def main():
 
     scores = {}
     confs = {}
+    anchored_names = []
+    held_names = []
     B = 32
     bl = sorted(bases)
     for i in range(0, len(bl), B):
         chunk = bl[i:i + B]
         for w, (e, c) in zip(chunk, batch_read(chunk)):
-            scores[w] = e
+            ae, st, act = anchor_e(w, e)
+            scores[w] = ae
             confs[w] = c
+            if act in ("封顶", "托底"):
+                anchored_names.append((w, e, ae, st, act))
+            elif act == "正典缺口·留审":
+                held_names.append((w, e, st))
         if (i // B) % 20 == 0:
             print(f"  ... {min(i + B, len(bl))}/{len(bl)}", flush=True)
 
+    moved = {w for w, e, ae, st, act in anchored_names if abs(ae - e) > 1e-9}
+    if held_names:
+        with open(os.path.join(PROJ, "data_v6", "正典缺口_留审.tsv"), "w", encoding="utf-8") as hf:
+            hf.write("词\t模型E\t超纲侧户口\n")
+            for w, e, st in sorted(set(held_names)):
+                hf.write(f"{w}\t{e:.3f}\t{st}\n")
+        print(f"正典缺口留审 {len(set(held_names))} 词 → data_v6/正典缺口_留审.tsv")
     for f in files:
         fmap = {}
         cmap = {}
@@ -156,12 +173,14 @@ def main():
                 "schemaVersion": 1,
                 "generator": "初中单词判定器 scan_chapter_grades.py",
                 "adapter": os.environ.get("JUDGE_ADAPTER", "v6"),
-                "generated": "2026-09-19",
+                "anchor": "学段户口v0.3·最早侧封顶托底",
+                "generated": "2026-09-20",
                 "words": dict(sorted(fmap.items(), key=lambda kv: -kv[1])),
                 "conf": cmap,
             }, out, ensure_ascii=False, indent=0)
         hot = sum(1 for e in fmap.values() if e >= 3.5)
-        print(f"{os.path.basename(f)} → {os.path.basename(dst)}（{len(fmap)} 词，超纲带 {hot}）")
+        nmoved = len(moved & set(fmap))
+        print(f"{os.path.basename(f)} → {os.path.basename(dst)}（{len(fmap)} 词，超纲带 {hot}，锚定纠偏 {nmoved}）")
     print("SCAN_GRADES_DONE")
 
 
